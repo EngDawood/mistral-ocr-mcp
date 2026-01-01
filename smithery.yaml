@@ -1,6 +1,20 @@
-runtime: "python"
+runtime: "container"
 
-# Server metadata
+startCommand:
+  type: "http"
+  configSchema:
+    type: "object"
+    properties:
+      MISTRAL_API_KEY:
+        type: "string"
+        description: "Mistral AI API key (get from https://console.mistral.ai/api-keys)"
+    required:
+      - MISTRAL_API_KEY
+
+build:
+  dockerfile: "Dockerfile"
+  dockerBuildPath: "."
+
 name: mistral-ocr-mcp
 description: |
   MCP server for Mistral AI OCR and audio transcription.
@@ -12,7 +26,7 @@ description: |
   - Multilingual support including Arabic and English
   - Page selection for partial PDF processing
 
-author: Your Name
+author: Eng.Dawood
 version: 0.1.0
 license: MIT
 
