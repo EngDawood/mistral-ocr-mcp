@@ -22,20 +22,22 @@ from typing import Optional
 from urllib.parse import urlparse
 from urllib.request import urlopen
 
-from dotenv import load_dotenv
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 from mistralai import DocumentURLChunk, Mistral
 from mistralai.models.file import File
-
-# Load environment variables
-load_dotenv()
-
-# Initialize MCP server
-mcp = FastMCP("mistral_ocr_mcp")
+from pydantic import BaseModel, Field
+from smithery.decorators import smithery
 
 # Constants
 DEFAULT_OCR_MODEL = "mistral-ocr-latest"
 DEFAULT_AUDIO_MODEL = "voxtral-mini-latest"
+
+
+class ConfigSchema(BaseModel):
+    """Configuration schema for Mistral OCR MCP Server."""
+    MISTRAL_API_KEY: str = Field(
+        description="Mistral AI API key (get from https://console.mistral.ai/api-keys)"
+    )
 
 
 # --- Helper Functions ---
@@ -43,16 +45,6 @@ DEFAULT_AUDIO_MODEL = "voxtral-mini-latest"
 def _log(message: str) -> None:
     """Log to stderr for debugging."""
     print(message, file=sys.stderr)
-
-
-def _get_api_key() -> str:
-    """Get Mistral API key from environment."""
-    api_key = os.getenv("MISTRAL_API_KEY")
-    if not api_key:
-        raise EnvironmentError(
-            "MISTRAL_API_KEY not found. Set it in your environment or .env file."
-        )
-    return api_key
 
 
 def _parse_page_spec(page_spec: str) -> set[int]:
@@ -116,6 +108,7 @@ def _download_pdf_from_url(url: str, output_dir: Path) -> Path:
 
 
 def _process_pdf_ocr(
+    api_key: str,
     pdf_path: Path,
     to_text: bool = True,
     page_numbers: Optional[set[int]] = None,
@@ -124,6 +117,7 @@ def _process_pdf_ocr(
     """Process PDF with Mistral OCR.
 
     Args:
+        api_key: Mistral API key
         pdf_path: Path to the PDF file
         to_text: If True, convert to plain text; if False, keep markdown
         page_numbers: Set of page numbers to process (1-indexed)
@@ -141,7 +135,6 @@ def _process_pdf_ocr(
         ext = ".txt" if to_text else ".md"
         output_path = pdf_path.with_suffix(ext)
 
-    api_key = _get_api_key()
     client = Mistral(api_key=api_key)
 
     # Upload file
@@ -183,10 +176,15 @@ def _process_pdf_ocr(
     return output_path, page_count
 
 
-def _transcribe_audio_file(audio_path: Path, output_path: Optional[Path] = None) -> Path:
+def _transcribe_audio_file(
+    api_key: str,
+    audio_path: Path,
+    output_path: Optional[Path] = None
+) -> Path:
     """Transcribe audio file using Mistral Voxtral.
 
     Args:
+        api_key: Mistral API key
         audio_path: Path to the audio file
         output_path: Custom output path
 
@@ -200,8 +198,6 @@ def _transcribe_audio_file(audio_path: Path, output_path: Optional[Path] = None)
 
     if output_path is None:
         output_path = audio_path.with_suffix(".txt")
-
-    api_key = _get_api_key()
 
     with Mistral(api_key=api_key) as client:
         with open(audio_path, "rb") as f:
@@ -226,225 +222,241 @@ def _format_error(error: str) -> str:
     return json.dumps({"success": False, "error": error}, indent=2)
 
 
-# --- MCP Tools ---
+@smithery.server(config_schema=ConfigSchema)
+def create_server():
+    """Create and return a FastMCP server instance with session config."""
+    
+    server = FastMCP("mistral_ocr_mcp")
 
-@mcp.tool(
-    name="pdf_to_text",
-    annotations={
-        "title": "Convert PDF to Plain Text",
-        "readOnlyHint": False,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True
-    }
-)
-async def pdf_to_text(
-    file_path: str,
-    pages: Optional[str] = None,
-    output_path: Optional[str] = None
-) -> str:
-    """Convert a PDF file to plain text using Mistral OCR.
-
-    Processes the PDF and extracts text content, stripping markdown formatting.
-    Supports processing specific pages.
-
-    Args:
-        file_path: Path to the PDF file to convert
-        pages: Specific pages to process (e.g., '1,8,9,11-20'). If not specified, all pages are processed.
-        output_path: Custom output path. Defaults to same directory as input with .txt extension.
-
-    Returns:
-        JSON with output_path and page_count
-    """
-    try:
-        pdf_path = Path(file_path)
-        if not file_path.lower().endswith(".pdf"):
-            return _format_error("File must be a PDF (.pdf extension)")
-
-        page_numbers = _parse_page_spec(pages) if pages else None
-        out_path = Path(output_path) if output_path else None
-
-        result_path, page_count = _process_pdf_ocr(
-            pdf_path=pdf_path,
-            to_text=True,
-            page_numbers=page_numbers,
-            output_path=out_path
-        )
-
-        return _format_success({
-            "output_path": str(result_path),
-            "page_count": page_count,
-            "format": "text"
-        })
-
-    except Exception as e:
-        return _format_error(str(e))
-
-
-@mcp.tool(
-    name="pdf_to_markdown",
-    annotations={
-        "title": "Convert PDF to Markdown",
-        "readOnlyHint": False,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True
-    }
-)
-async def pdf_to_markdown(
-    file_path: str,
-    pages: Optional[str] = None,
-    output_path: Optional[str] = None
-) -> str:
-    """Convert a PDF file to markdown using Mistral OCR.
-
-    Processes the PDF and preserves markdown formatting including headings,
-    tables, and figure references. Supports processing specific pages.
-
-    Args:
-        file_path: Path to the PDF file to convert
-        pages: Specific pages to process (e.g., '1,8,9,11-20'). If not specified, all pages are processed.
-        output_path: Custom output path. Defaults to same directory as input with .md extension.
-
-    Returns:
-        JSON with output_path and page_count
-    """
-    try:
-        pdf_path = Path(file_path)
-        if not file_path.lower().endswith(".pdf"):
-            return _format_error("File must be a PDF (.pdf extension)")
-
-        page_numbers = _parse_page_spec(pages) if pages else None
-        out_path = Path(output_path) if output_path else None
-
-        result_path, page_count = _process_pdf_ocr(
-            pdf_path=pdf_path,
-            to_text=False,
-            page_numbers=page_numbers,
-            output_path=out_path
-        )
-
-        return _format_success({
-            "output_path": str(result_path),
-            "page_count": page_count,
-            "format": "markdown"
-        })
-
-    except Exception as e:
-        return _format_error(str(e))
-
-
-@mcp.tool(
-    name="pdf_from_url",
-    annotations={
-        "title": "Process PDF from URL",
-        "readOnlyHint": False,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True
-    }
-)
-async def pdf_from_url(
-    url: str,
-    output_format: str = "text",
-    pages: Optional[str] = None,
-    keep_pdf: bool = False
-) -> str:
-    """Download and process a PDF from a URL using Mistral OCR.
-
-    Downloads the PDF, processes it, and optionally deletes the downloaded file.
-
-    Args:
-        url: URL of the PDF file to download and process
-        output_format: Output format: 'text' for plain text or 'markdown' for markdown
-        pages: Specific pages to process (e.g., '1,8,9,11-20'). If not specified, all pages are processed.
-        keep_pdf: Keep the downloaded PDF file after processing
-
-    Returns:
-        JSON with output_path, page_count, and pdf_path (if kept)
-    """
-    try:
-        if output_format.lower() not in ("text", "markdown"):
-            return _format_error("output_format must be 'text' or 'markdown'")
-
-        # Download PDF to temp directory
-        download_dir = Path(tempfile.gettempdir())
-        pdf_path = _download_pdf_from_url(url, download_dir)
-
-        page_numbers = _parse_page_spec(pages) if pages else None
-        to_text = output_format.lower() == "text"
-
-        result_path, page_count = _process_pdf_ocr(
-            pdf_path=pdf_path,
-            to_text=to_text,
-            page_numbers=page_numbers
-        )
-
-        response_data = {
-            "output_path": str(result_path),
-            "page_count": page_count,
-            "format": output_format.lower()
+    @server.tool(
+        name="pdf_to_text",
+        annotations={
+            "title": "Convert PDF to Plain Text",
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True
         }
+    )
+    async def pdf_to_text(
+        file_path: str,
+        pages: Optional[str] = None,
+        output_path: Optional[str] = None,
+        ctx: Context = None
+    ) -> str:
+        """Convert a PDF file to plain text using Mistral OCR.
 
-        # Clean up or report PDF path
-        if keep_pdf:
-            response_data["pdf_path"] = str(pdf_path)
-        else:
-            pdf_path.unlink()
-            response_data["pdf_deleted"] = True
+        Processes the PDF and extracts text content, stripping markdown formatting.
+        Supports processing specific pages.
 
-        return _format_success(response_data)
+        Args:
+            file_path: Path to the PDF file to convert
+            pages: Specific pages to process (e.g., '1,8,9,11-20'). If not specified, all pages are processed.
+            output_path: Custom output path. Defaults to same directory as input with .txt extension.
 
-    except Exception as e:
-        return _format_error(str(e))
+        Returns:
+            JSON with output_path and page_count
+        """
+        try:
+            api_key = ctx.session_config.MISTRAL_API_KEY
+            pdf_path = Path(file_path)
+            if not file_path.lower().endswith(".pdf"):
+                return _format_error("File must be a PDF (.pdf extension)")
 
+            page_numbers = _parse_page_spec(pages) if pages else None
+            out_path = Path(output_path) if output_path else None
 
-@mcp.tool(
-    name="transcribe_audio",
-    annotations={
-        "title": "Transcribe Audio to Text",
-        "readOnlyHint": False,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True
-    }
-)
-async def transcribe_audio(
-    file_path: str,
-    output_path: Optional[str] = None
-) -> str:
-    """Transcribe an audio file to text using Mistral Voxtral.
+            result_path, page_count = _process_pdf_ocr(
+                api_key=api_key,
+                pdf_path=pdf_path,
+                to_text=True,
+                page_numbers=page_numbers,
+                output_path=out_path
+            )
 
-    Supports multiple audio formats including .ogg, .mp3, .wav, .m4a, .flac.
-    Handles multiple languages including Arabic and English.
+            return _format_success({
+                "output_path": str(result_path),
+                "page_count": page_count,
+                "format": "text"
+            })
 
-    Args:
-        file_path: Path to the audio file to transcribe (supports .ogg, .mp3, .wav, .m4a, .flac)
-        output_path: Custom output path. Defaults to same directory as input with .txt extension.
+        except Exception as e:
+            return _format_error(str(e))
 
-    Returns:
-        JSON with output_path
-    """
-    try:
-        audio_path = Path(file_path)
-        out_path = Path(output_path) if output_path else None
+    @server.tool(
+        name="pdf_to_markdown",
+        annotations={
+            "title": "Convert PDF to Markdown",
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True
+        }
+    )
+    async def pdf_to_markdown(
+        file_path: str,
+        pages: Optional[str] = None,
+        output_path: Optional[str] = None,
+        ctx: Context = None
+    ) -> str:
+        """Convert a PDF file to markdown using Mistral OCR.
 
-        result_path = _transcribe_audio_file(
-            audio_path=audio_path,
-            output_path=out_path
-        )
+        Processes the PDF and preserves markdown formatting including headings,
+        tables, and figure references. Supports processing specific pages.
 
-        return _format_success({
-            "output_path": str(result_path)
-        })
+        Args:
+            file_path: Path to the PDF file to convert
+            pages: Specific pages to process (e.g., '1,8,9,11-20'). If not specified, all pages are processed.
+            output_path: Custom output path. Defaults to same directory as input with .md extension.
 
-    except Exception as e:
-        return _format_error(str(e))
+        Returns:
+            JSON with output_path and page_count
+        """
+        try:
+            api_key = ctx.session_config.MISTRAL_API_KEY
+            pdf_path = Path(file_path)
+            if not file_path.lower().endswith(".pdf"):
+                return _format_error("File must be a PDF (.pdf extension)")
+
+            page_numbers = _parse_page_spec(pages) if pages else None
+            out_path = Path(output_path) if output_path else None
+
+            result_path, page_count = _process_pdf_ocr(
+                api_key=api_key,
+                pdf_path=pdf_path,
+                to_text=False,
+                page_numbers=page_numbers,
+                output_path=out_path
+            )
+
+            return _format_success({
+                "output_path": str(result_path),
+                "page_count": page_count,
+                "format": "markdown"
+            })
+
+        except Exception as e:
+            return _format_error(str(e))
+
+    @server.tool(
+        name="pdf_from_url",
+        annotations={
+            "title": "Process PDF from URL",
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True
+        }
+    )
+    async def pdf_from_url(
+        url: str,
+        output_format: str = "text",
+        pages: Optional[str] = None,
+        keep_pdf: bool = False,
+        ctx: Context = None
+    ) -> str:
+        """Download and process a PDF from a URL using Mistral OCR.
+
+        Downloads the PDF, processes it, and optionally deletes the downloaded file.
+
+        Args:
+            url: URL of the PDF file to download and process
+            output_format: Output format: 'text' for plain text or 'markdown' for markdown
+            pages: Specific pages to process (e.g., '1,8,9,11-20'). If not specified, all pages are processed.
+            keep_pdf: Keep the downloaded PDF file after processing
+
+        Returns:
+            JSON with output_path, page_count, and pdf_path (if kept)
+        """
+        try:
+            api_key = ctx.session_config.MISTRAL_API_KEY
+            if output_format.lower() not in ("text", "markdown"):
+                return _format_error("output_format must be 'text' or 'markdown'")
+
+            # Download PDF to temp directory
+            download_dir = Path(tempfile.gettempdir())
+            pdf_path = _download_pdf_from_url(url, download_dir)
+
+            page_numbers = _parse_page_spec(pages) if pages else None
+            to_text = output_format.lower() == "text"
+
+            result_path, page_count = _process_pdf_ocr(
+                api_key=api_key,
+                pdf_path=pdf_path,
+                to_text=to_text,
+                page_numbers=page_numbers
+            )
+
+            response_data = {
+                "output_path": str(result_path),
+                "page_count": page_count,
+                "format": output_format.lower()
+            }
+
+            # Clean up or report PDF path
+            if keep_pdf:
+                response_data["pdf_path"] = str(pdf_path)
+            else:
+                pdf_path.unlink()
+                response_data["pdf_deleted"] = True
+
+            return _format_success(response_data)
+
+        except Exception as e:
+            return _format_error(str(e))
+
+    @server.tool(
+        name="transcribe_audio",
+        annotations={
+            "title": "Transcribe Audio to Text",
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True
+        }
+    )
+    async def transcribe_audio(
+        file_path: str,
+        output_path: Optional[str] = None,
+        ctx: Context = None
+    ) -> str:
+        """Transcribe an audio file to text using Mistral Voxtral.
+
+        Supports multiple audio formats including .ogg, .mp3, .wav, .m4a, .flac.
+        Handles multiple languages including Arabic and English.
+
+        Args:
+            file_path: Path to the audio file to transcribe (supports .ogg, .mp3, .wav, .m4a, .flac)
+            output_path: Custom output path. Defaults to same directory as input with .txt extension.
+
+        Returns:
+            JSON with output_path
+        """
+        try:
+            api_key = ctx.session_config.MISTRAL_API_KEY
+            audio_path = Path(file_path)
+            out_path = Path(output_path) if output_path else None
+
+            result_path = _transcribe_audio_file(
+                api_key=api_key,
+                audio_path=audio_path,
+                output_path=out_path
+            )
+
+            return _format_success({
+                "output_path": str(result_path)
+            })
+
+        except Exception as e:
+            return _format_error(str(e))
+
+    return server
 
 
 def main():
     """Entry point for the MCP server."""
-    mcp.run()
+    server = create_server()
+    server.run()
 
 
 if __name__ == "__main__":
