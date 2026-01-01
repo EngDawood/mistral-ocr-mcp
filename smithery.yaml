@@ -1,1 +1,35 @@
 runtime: "python"
+
+# Server metadata
+name: mistral-ocr-mcp
+description: |
+  MCP server for Mistral AI OCR and audio transcription.
+  
+  Features:
+  - Convert PDF files to plain text or markdown using Mistral OCR
+  - Process PDFs from URLs with automatic cleanup
+  - Transcribe audio files (mp3, wav, ogg, m4a, flac) to text
+  - Multilingual support including Arabic and English
+  - Page selection for partial PDF processing
+
+author: Your Name
+version: 0.1.0
+license: MIT
+
+tools:
+  - name: pdf_to_text
+    description: Convert a PDF file to plain text using Mistral OCR
+  - name: pdf_to_markdown
+    description: Convert a PDF file to markdown, preserving formatting
+  - name: pdf_from_url
+    description: Download and process a PDF from a URL
+  - name: transcribe_audio
+    description: Transcribe audio files to text using Mistral Voxtral
+
+tags:
+  - ocr
+  - pdf
+  - transcription
+  - audio
+  - mistral
+  - document-processing
