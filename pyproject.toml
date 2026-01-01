@@ -1,10 +1,14 @@
+[build-system]
+requires = ["uv_build>=0.8.15,<0.9.0"]
+build-backend = "uv_build"
+
 [project]
 name = "mistral-ocr-mcp"
 version = "0.1.0"
 description = "MCP server for Mistral AI OCR and audio transcription"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 authors = [
     { name = "Your Name", email = "your.email@example.com" }
 ]
@@ -14,29 +18,28 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
     "python-dotenv>=1.0.0",
     "mistralai>=1.0.0",
-    "mcp>=1.0.0",
+    "mcp>=1.15.0",
+    "smithery>=0.4.2",
     "pydantic>=2.0.0",
     "httpx>=0.25.0",
 ]
 
 [project.scripts]
-mistral-ocr-mcp = "mistral_ocr_mcp:main"
+dev = "smithery.cli.dev:main"
+playground = "smithery.cli.playground:main"
 
 [project.urls]
 Homepage = "https://github.com/yourusername/mistral-ocr-mcp"
 Repository = "https://github.com/yourusername/mistral-ocr-mcp"
 Issues = "https://github.com/yourusername/mistral-ocr-mcp/issues"
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+[tool.smithery]
+server = "mistral_ocr_mcp.server:create_server"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mistral_ocr_mcp"]
