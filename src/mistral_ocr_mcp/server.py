@@ -22,22 +22,23 @@ from typing import Optional
 from urllib.parse import urlparse
 from urllib.request import urlopen
 
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.fastmcp import FastMCP
 from mistralai import DocumentURLChunk, Mistral
 from mistralai.models.file import File
-from pydantic import BaseModel, Field
-from smithery.decorators import smithery
 
 # Constants
 DEFAULT_OCR_MODEL = "mistral-ocr-latest"
 DEFAULT_AUDIO_MODEL = "voxtral-mini-latest"
 
 
-class ConfigSchema(BaseModel):
-    """Configuration schema for Mistral OCR MCP Server."""
-    MISTRAL_API_KEY: str = Field(
-        description="Mistral AI API key (get from https://console.mistral.ai/api-keys)"
-    )
+def _get_api_key() -> str:
+    """Get Mistral API key from environment."""
+    api_key = os.getenv("MISTRAL_API_KEY")
+    if not api_key:
+        raise EnvironmentError(
+            "MISTRAL_API_KEY not found. Set it in your environment or .env file."
+        )
+    return api_key
 
 
 # --- Helper Functions ---
@@ -108,7 +109,6 @@ def _download_pdf_from_url(url: str, output_dir: Path) -> Path:
 
 
 def _process_pdf_ocr(
-    api_key: str,
     pdf_path: Path,
     to_text: bool = True,
     page_numbers: Optional[set[int]] = None,
@@ -117,7 +117,6 @@ def _process_pdf_ocr(
     """Process PDF with Mistral OCR.
 
     Args:
-        api_key: Mistral API key
         pdf_path: Path to the PDF file
         to_text: If True, convert to plain text; if False, keep markdown
         page_numbers: Set of page numbers to process (1-indexed)
@@ -135,6 +134,7 @@ def _process_pdf_ocr(
         ext = ".txt" if to_text else ".md"
         output_path = pdf_path.with_suffix(ext)
 
+    api_key = _get_api_key()
     client = Mistral(api_key=api_key)
 
     # Upload file
@@ -177,14 +177,12 @@ def _process_pdf_ocr(
 
 
 def _transcribe_audio_file(
-    api_key: str,
     audio_path: Path,
     output_path: Optional[Path] = None
 ) -> Path:
     """Transcribe audio file using Mistral Voxtral.
 
     Args:
-        api_key: Mistral API key
         audio_path: Path to the audio file
         output_path: Custom output path
 
@@ -198,6 +196,8 @@ def _transcribe_audio_file(
 
     if output_path is None:
         output_path = audio_path.with_suffix(".txt")
+
+    api_key = _get_api_key()
 
     with Mistral(api_key=api_key) as client:
         with open(audio_path, "rb") as f:
@@ -241,8 +241,7 @@ def create_server():
     async def pdf_to_text(
         file_path: str,
         pages: Optional[str] = None,
-        output_path: Optional[str] = None,
-        ctx: Context = None
+        output_path: Optional[str] = None
     ) -> str:
         """Convert a PDF file to plain text using Mistral OCR.
 
@@ -258,7 +257,6 @@ def create_server():
             JSON with output_path and page_count
         """
         try:
-            api_key = ctx.session_config.MISTRAL_API_KEY
             pdf_path = Path(file_path)
             if not file_path.lower().endswith(".pdf"):
                 return _format_error("File must be a PDF (.pdf extension)")
@@ -267,7 +265,6 @@ def create_server():
             out_path = Path(output_path) if output_path else None
 
             result_path, page_count = _process_pdf_ocr(
-                api_key=api_key,
                 pdf_path=pdf_path,
                 to_text=True,
                 page_numbers=page_numbers,
@@ -296,8 +293,7 @@ def create_server():
     async def pdf_to_markdown(
         file_path: str,
         pages: Optional[str] = None,
-        output_path: Optional[str] = None,
-        ctx: Context = None
+        output_path: Optional[str] = None
     ) -> str:
         """Convert a PDF file to markdown using Mistral OCR.
 
@@ -313,7 +309,6 @@ def create_server():
             JSON with output_path and page_count
         """
         try:
-            api_key = ctx.session_config.MISTRAL_API_KEY
             pdf_path = Path(file_path)
             if not file_path.lower().endswith(".pdf"):
                 return _format_error("File must be a PDF (.pdf extension)")
@@ -322,7 +317,6 @@ def create_server():
             out_path = Path(output_path) if output_path else None
 
             result_path, page_count = _process_pdf_ocr(
-                api_key=api_key,
                 pdf_path=pdf_path,
                 to_text=False,
                 page_numbers=page_numbers,
@@ -352,8 +346,7 @@ def create_server():
         url: str,
         output_format: str = "text",
         pages: Optional[str] = None,
-        keep_pdf: bool = False,
-        ctx: Context = None
+        keep_pdf: bool = False
     ) -> str:
         """Download and process a PDF from a URL using Mistral OCR.
 
@@ -369,7 +362,6 @@ def create_server():
             JSON with output_path, page_count, and pdf_path (if kept)
         """
         try:
-            api_key = ctx.session_config.MISTRAL_API_KEY
             if output_format.lower() not in ("text", "markdown"):
                 return _format_error("output_format must be 'text' or 'markdown'")
 
@@ -381,7 +373,6 @@ def create_server():
             to_text = output_format.lower() == "text"
 
             result_path, page_count = _process_pdf_ocr(
-                api_key=api_key,
                 pdf_path=pdf_path,
                 to_text=to_text,
                 page_numbers=page_numbers
@@ -417,8 +408,7 @@ def create_server():
     )
     async def transcribe_audio(
         file_path: str,
-        output_path: Optional[str] = None,
-        ctx: Context = None
+        output_path: Optional[str] = None
     ) -> str:
         """Transcribe an audio file to text using Mistral Voxtral.
 
@@ -433,12 +423,10 @@ def create_server():
             JSON with output_path
         """
         try:
-            api_key = ctx.session_config.MISTRAL_API_KEY
             audio_path = Path(file_path)
             out_path = Path(output_path) if output_path else None
 
             result_path = _transcribe_audio_file(
-                api_key=api_key,
                 audio_path=audio_path,
                 output_path=out_path
             )
